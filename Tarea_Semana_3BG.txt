@@ -1,0 +1,1404 @@
+# =========================================================
+# TALLER COMPLETO - VERSION CON DATASET HUGGING FACE LMSYS
+# AUDITORIA Y TRAZABILIDAD DE IA GENERATIVA CON R
+# Maestria en IA / Big Data / Transformacion Digital
+# Dataset: lmsys/lmsys-chat-1m
+# =========================================================
+
+# =========================================================
+# 1. LIMPIEZA DEL ENTORNO
+# =========================================================
+
+rm(list = ls())
+cat("\014")
+
+# =========================================================
+# 2. INSTALACION DE LIBRERIAS
+# =========================================================
+
+paquetes <- c(
+  "tidyverse",
+  "lubridate",
+  "ggplot2",
+  "dplyr",
+  "readr",
+  "jsonlite",
+  "httr",
+  "stringr",
+  "tidyr"
+)
+
+instalados <- paquetes %in% installed.packages()[, "Package"]
+
+if(any(instalados == FALSE)){
+  install.packages(paquetes[!instalados])
+}
+
+# =========================================================
+# 3. CARGA DE LIBRERIAS
+# =========================================================
+
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(jsonlite)
+library(httr)
+library(stringr)
+library(tidyr)
+
+# =========================================================
+# 4. CREACION DE CARPETAS
+# =========================================================
+
+proyecto_dir <- "Laboratorio_HuggingFace_LMSYS"
+
+dirs <- c(
+  file.path(proyecto_dir, "data"),
+  file.path(proyecto_dir, "graficos"),
+  file.path(proyecto_dir, "reportes"),
+  file.path(proyecto_dir, "resultados")
+)
+
+if(!dir.exists(proyecto_dir)){
+  dir.create(proyecto_dir)
+}
+
+for(d in dirs){
+  if(!dir.exists(d)){
+    dir.create(d, recursive = TRUE)
+  }
+}
+
+# =========================================================
+# 5. CONFIGURACION DEL DATASET DE HUGGING FACE
+# =========================================================
+
+cat("\n====================================")
+cat("\n CONFIGURANDO DATASET DE HUGGING FACE")
+cat("\n====================================\n")
+
+dataset_id <- "lmsys/lmsys-chat-1m"
+config_dataset <- "default"
+split_dataset <- "train"
+offset <- 0
+n_registros <- 100
+
+cat("\nDataset seleccionado:", dataset_id)
+cat("\nConfiguracion:", config_dataset)
+cat("\nSplit:", split_dataset)
+cat("\nRegistros solicitados:", n_registros)
+cat("\n")
+
+# =========================================================
+# 6. TOKEN OPCIONAL DE HUGGING FACE
+# =========================================================
+# Si el dataset te pide aceptar condiciones, primero entra a:
+# https://huggingface.co/datasets/lmsys/lmsys-chat-1m
+# Acepta las condiciones con tu cuenta.
+#
+# Luego crea un token en Hugging Face y configuralo en R:
+# Sys.setenv(HF_TOKEN = "TU_TOKEN_AQUI")
+#
+# Si ya tienes el token guardado como variable de entorno, no pongas nada aqui.
+
+hf_token <- Sys.getenv("HF_TOKEN")
+
+# =========================================================
+# 7. DESCARGAR DATOS DESDE HUGGING FACE DATASET SERVER
+# =========================================================
+
+cat("\n====================================")
+cat("\n DESCARGANDO DATOS DESDE HUGGING FACE")
+cat("\n====================================\n")
+
+url_base <- "https://datasets-server.huggingface.co/rows"
+
+url_api <- modify_url(
+  url_base,
+  query = list(
+    dataset = dataset_id,
+    config = config_dataset,
+    split = split_dataset,
+    offset = offset,
+    length = n_registros
+  )
+)
+
+cat("\nURL generada:\n")
+cat(url_api, "\n")
+
+if(hf_token != ""){
+  respuesta <- GET(
+    url_api,
+    add_headers(
+      "User-Agent" = "RStudio-HuggingFace-Auditoria-IA",
+      "Authorization" = paste("Bearer", hf_token)
+    ),
+    timeout(60)
+  )
+} else {
+  respuesta <- GET(
+    url_api,
+    add_headers(
+      "User-Agent" = "RStudio-HuggingFace-Auditoria-IA"
+    ),
+    timeout(60)
+  )
+}
+
+if(status_code(respuesta) != 200){
+  stop(
+    paste(
+      "Error al descargar datos. Codigo HTTP:",
+      status_code(respuesta),
+      "\nRespuesta:",
+      content(respuesta, as = "text", encoding = "UTF-8")
+    )
+  )
+}
+
+contenido_texto <- content(
+  respuesta,
+  as = "text",
+  encoding = "UTF-8"
+)
+
+contenido_api <- fromJSON(
+  contenido_texto,
+  simplifyDataFrame = TRUE
+)
+
+if(is.null(contenido_api$rows)){
+  stop("La API no devolvio filas. Revisa dataset, config, split o permisos.")
+}
+
+datos_raw <- contenido_api$rows$row
+
+if(is.null(datos_raw) || nrow(datos_raw) == 0){# =========================================================
+  # TALLER - AUDITORIA Y TRAZABILIDAD DE IA GENERATIVA (v2)
+  # Dataset: lmsys/lmsys-chat-1m (Hugging Face)
+  # Maestria en IA / Big Data / Transformacion Digital
+  # ---------------------------------------------------------
+  # CAMBIOS PRINCIPALES vs. version original:
+  #  1. Parsing CORRECTO de `conversation` (lista de mensajes role/content)
+  #  2. Uso de metadata existente del dataset: language, openai_moderation, turn
+  #  3. Scoring de riesgo ponderado (no solo keyword binario)
+  #  4. Regex con word boundaries \b para reducir falsos positivos
+  #  5. Validacion del clasificador propio vs OpenAI moderation (ground truth)
+  #  6. Descarga con reintentos y manejo de errores
+  #  7. Logging con timestamp
+  #  8. Dashboard combinado con patchwork
+  #  9. Text mining basico (tidytext) sobre prompts de alto riesgo
+  # 10. Datos simulados (usuario, departamento) marcados con sufijo _sim
+  # =========================================================
+  
+  
+  # ---------------------------------------------------------
+  # 1. LIMPIEZA Y PAQUETES
+  # ---------------------------------------------------------
+  rm(list = ls())
+  cat("\014")
+  options(stringsAsFactors = FALSE)
+  
+  paquetes <- c(
+    "tidyverse",   # dplyr, ggplot2, purrr, tidyr, stringr, readr
+    "lubridate",   # fechas
+    "jsonlite",    # parsing JSON
+    "httr",        # llamadas HTTP
+    "tidytext",    # text mining
+    "patchwork",   # combinar graficos
+    "scales",      # formato de ejes
+    "glue",        # interpolacion de strings
+    "knitr"        # tablas en consola
+  )
+  
+  faltantes <- paquetes[!paquetes %in% installed.packages()[, "Package"]]
+  if (length(faltantes) > 0) install.packages(faltantes, quiet = TRUE)
+  invisible(lapply(paquetes, library, character.only = TRUE))
+  
+  
+  # ---------------------------------------------------------
+  # 2. CONFIGURACION (un solo bloque)
+  # ---------------------------------------------------------
+  CONFIG <- list(
+    dataset_id     = "lmsys/lmsys-chat-1m",
+    config_dataset = "default",
+    split_dataset  = "train",
+    offset         = 0,
+    n_registros    = 100,
+    proyecto_dir   = "Laboratorio_HuggingFace_LMSYS_v2",
+    seed           = 123,
+    url_base       = "https://datasets-server.huggingface.co/rows",
+    umbral_alto    = 3,   # score >= 3 => ALTO
+    umbral_medio   = 1    # score >= 1 => MEDIO
+  )
+  
+  set.seed(CONFIG$seed)
+  
+  
+  # ---------------------------------------------------------
+  # 3. UTILIDADES (logging y operador null-default)
+  # ---------------------------------------------------------
+  log_info  <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "[INFO]",  ..., "\n")
+  log_warn  <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "[WARN]",  ..., "\n")
+  log_error <- function(...) cat(format(Sys.time(), "%H:%M:%S"), "[ERROR]", ..., "\n")
+  
+  `%||%` <- function(a, b) {
+    if (is.null(a)) return(b)
+    if (length(a) == 1 && is.na(a)) return(b)
+    a
+  }
+  
+  
+  # ---------------------------------------------------------
+  # 4. ESTRUCTURA DE CARPETAS
+  # ---------------------------------------------------------
+  for (sd in c("data", "graficos", "reportes", "resultados")) {
+    ruta <- file.path(CONFIG$proyecto_dir, sd)
+    if (!dir.exists(ruta)) dir.create(ruta, recursive = TRUE)
+  }
+  log_info("Estructura de carpetas lista en:", CONFIG$proyecto_dir)
+  
+  
+  # ---------------------------------------------------------
+  # 5. DESCARGA DESDE HUGGING FACE CON REINTENTOS
+  # ---------------------------------------------------------
+  descargar_hf <- function(cfg, max_intentos = 3) {
+    
+    url_api <- modify_url(
+      cfg$url_base,
+      query = list(
+        dataset = cfg$dataset_id,
+        config  = cfg$config_dataset,
+        split   = cfg$split_dataset,
+        offset  = cfg$offset,
+        length  = cfg$n_registros
+      )
+    )
+    log_info("URL:", url_api)
+    
+    hf_token <- Sys.getenv("HF_TOKEN")
+    hdrs <- c("User-Agent" = "RStudio-Auditoria-IA-v2")
+    if (nzchar(hf_token)) {
+      hdrs <- c(hdrs, "Authorization" = paste("Bearer", hf_token))
+      log_info("Token HF detectado.")
+    } else {
+      log_warn("Sin HF_TOKEN. Si el dataset exige aceptar terminos, fallara.")
+    }
+    
+    for (intento in seq_len(max_intentos)) {
+      log_info(glue("Descarga, intento {intento}/{max_intentos}..."))
+      
+      resp <- tryCatch(
+        GET(url_api, do.call(add_headers, as.list(hdrs)), timeout(60)),
+        error = function(e) { log_error("Red:", conditionMessage(e)); NULL }
+      )
+      
+      if (!is.null(resp) && status_code(resp) == 200) {
+        cont <- fromJSON(content(resp, "text", encoding = "UTF-8"),
+                         simplifyDataFrame = TRUE)
+        if (!is.null(cont$rows) && length(cont$rows) > 0) {
+          df <- cont$rows$row
+          log_info("OK. Filas descargadas:", nrow(df))
+          return(df)
+        }
+      } else if (!is.null(resp)) {
+        log_warn("HTTP", status_code(resp))
+      }
+      Sys.sleep(2)
+    }
+    
+    stop("No se pudo descargar tras ", max_intentos, " intentos.")
+  }
+  
+  datos_raw <- descargar_hf(CONFIG)
+  
+  log_info("Columnas disponibles:")
+  print(names(datos_raw))
+  
+  
+  # ---------------------------------------------------------
+  # 6. PARSERS DE LA CONVERSACION
+  # ---------------------------------------------------------
+  # `conversation` en LMSYS = lista de mensajes {role, content}.
+  # Despues de fromJSON(simplifyDataFrame=TRUE), suele venir como list-column
+  # donde cada elemento es un data.frame con columnas role y content.
+  # Manejamos ambos casos (data.frame y lista) por seguridad.
+  
+  extraer_mensaje <- function(conv, rol = "user", indice = 1) {
+    if (is.null(conv) || length(conv) == 0) return(NA_character_)
+    
+    if (is.data.frame(conv)) {
+      if (!all(c("role", "content") %in% names(conv))) return(NA_character_)
+      msgs <- conv$content[conv$role == rol]
+      if (length(msgs) >= indice) return(as.character(msgs[[indice]]))
+      return(NA_character_)
+    }
+    
+    if (is.list(conv)) {
+      roles    <- map_chr(conv, ~ as.character(.x$role    %||% NA))
+      contents <- map_chr(conv, ~ as.character(.x$content %||% NA))
+      msgs     <- contents[roles == rol]
+      if (length(msgs) >= indice) return(msgs[[indice]])
+      return(NA_character_)
+    }
+    NA_character_
+  }
+  
+  contar_turnos <- function(conv) {
+    if (is.data.frame(conv)) return(nrow(conv))
+    if (is.list(conv))       return(length(conv))
+    0L
+  }
+  
+  # Moderation de OpenAI: devolver TRUE si ALGUN turno fue flagged,
+  # y la lista de categorias detectadas (separadas por ;).
+  parse_moderation <- function(mod) {
+    tryCatch({
+      if (is.null(mod) || length(mod) == 0) {
+        return(list(flagged = FALSE, cats = ""))
+      }
+      aplanado <- unlist(mod)
+      nombres  <- names(aplanado) %||% ""
+      
+      # flagged en cualquier turno
+      idx_flag <- str_ends(nombres, "flagged") | nombres == "flagged"
+      flagged  <- any(as.logical(aplanado[idx_flag]) %in% TRUE)
+      
+      # categorias marcadas como TRUE
+      idx_cat <- str_detect(nombres, "categories\\.")
+      vals    <- suppressWarnings(as.logical(aplanado[idx_cat]))
+      cats    <- nombres[idx_cat][vals %in% TRUE]
+      cats    <- str_remove(cats, ".*categories\\.")
+      
+      list(flagged = flagged, cats = paste(unique(cats), collapse = ";"))
+    }, error = function(e) list(flagged = FALSE, cats = ""))
+  }
+  
+  
+  # ---------------------------------------------------------
+  # 7. ENRIQUECIMIENTO DEL DATASET
+  # ---------------------------------------------------------
+  log_info("Parseando conversaciones...")
+  
+  cols <- names(datos_raw)
+  
+  logs_ia <- datos_raw %>%
+    mutate(
+      id           = row_number(),
+      id_auditoria = sprintf("AUD-%d-%05d", year(Sys.Date()), id),
+      fecha        = Sys.time() + seconds(seq_len(n())),
+      
+      prompt        = map_chr(conversation, ~ extraer_mensaje(.x, "user",      1)),
+      respuesta     = map_chr(conversation, ~ extraer_mensaje(.x, "assistant", 1)),
+      turnos        = map_int(conversation, contar_turnos),
+      
+      prompt_chars   = nchar(prompt %||% ""),
+      respuesta_chars = nchar(respuesta %||% ""),
+      prompt_corto   = str_trunc(prompt, 200),
+      
+      # Datos SIMULADOS para narrativa organizacional (sufijo _sim)
+      usuario_sim      = paste0("usuario_", sample(1:50, n(), replace = TRUE)),
+      departamento_sim = sample(
+        c("Ingenieria", "Docencia", "Investigacion", "Administracion"),
+        n(), replace = TRUE
+      ),
+      fuente = "HuggingFace:lmsys/lmsys-chat-1m"
+    ) %>%
+    filter(!is.na(prompt), nchar(prompt) > 0)
+  
+  # Aprovechamos metadata real si existe
+  logs_ia$modelo <- if ("model"    %in% cols) datos_raw$model[seq_len(nrow(logs_ia))]    else "desconocido"
+  logs_ia$idioma <- if ("language" %in% cols) datos_raw$language[seq_len(nrow(logs_ia))] else "desconocido"
+  
+  if ("openai_moderation" %in% cols) {
+    log_info("Parseando openai_moderation (ground truth)...")
+    mod_parsed <- map(datos_raw$openai_moderation[seq_len(nrow(logs_ia))], parse_moderation)
+    logs_ia$mod_flagged <- map_lgl(mod_parsed, "flagged")
+    logs_ia$mod_cats    <- map_chr(mod_parsed, "cats")
+  } else {
+    logs_ia$mod_flagged <- FALSE
+    logs_ia$mod_cats    <- ""
+  }
+  
+  log_info("Registros despues de parsing:", nrow(logs_ia))
+  
+  
+  # ---------------------------------------------------------
+  # 8. CLASIFICACION DE RIESGO PONDERADA
+  # ---------------------------------------------------------
+  # Cada categoria tiene un regex con \b word boundaries y un peso.
+  # El score total es la suma de pesos de categorias detectadas.
+  # Esto evita falsos positivos tipo "hackathon" -> "hack".
+  
+  PATRONES_RIESGO <- list(
+    credenciales = list(
+      regex = "\\b(api[ _-]?key|password|contrase\u00f1a|token|secret|credential)\\b",
+      peso  = 3
+    ),
+    cyber_attack = list(
+      regex = "\\b(malware|virus|phishing|ransomware|exploit|vulnerability|backdoor)\\b",
+      peso  = 3
+    ),
+    identidad = list(
+      regex = "\\b(deepfake|fake\\s+identity|identidad\\s+falsa|impersonate)\\b",
+      peso  = 3
+    ),
+    datos_personales = list(
+      regex = "\\b(ssn|social\\s+security|datos\\s+personales|personal\\s+data|private\\s+information|informaci\u00f3n\\s+privada)\\b",
+      peso  = 2
+    ),
+    evasion_prompt = list(
+      regex = "\\b(bypass|jailbreak|ignore\\s+(previous|prior|above)\\s+(instructions|rules)|prompt\\s+injection)\\b",
+      peso  = 3
+    ),
+    manipulacion = list(
+      regex = "\\b(fake\\s+news|noticia\\s+falsa|propaganda)\\b",
+      peso  = 2
+    ),
+    academico = list(
+      regex = "\\b(tesis|thesis|ensayo|essay|tarea|homework|examen|exam)\\b",
+      peso  = 1
+    ),
+    codigo = list(
+      regex = "\\b(code|c\u00f3digo|program|script|function|algorithm)\\b",
+      peso  = 1
+    )
+  )
+  
+  evaluar_riesgo <- function(prompt) {
+    if (is.na(prompt) || nchar(prompt) == 0) {
+      return(list(score = 0, cats = ""))
+    }
+    texto <- tolower(prompt)
+    score <- 0
+    detect <- character(0)
+    for (nm in names(PATRONES_RIESGO)) {
+      p <- PATRONES_RIESGO[[nm]]
+      if (str_detect(texto, p$regex)) {
+        score <- score + p$peso
+        detect <- c(detect, nm)
+      }
+    }
+    list(score = score, cats = paste(detect, collapse = ";"))
+  }
+  
+  eval_list <- map(logs_ia$prompt, evaluar_riesgo)
+  logs_ia$score_riesgo      <- map_dbl(eval_list, "score")
+  logs_ia$categorias_riesgo <- map_chr(eval_list, "cats")
+  logs_ia$riesgo <- case_when(
+    logs_ia$score_riesgo >= CONFIG$umbral_alto  ~ "ALTO",
+    logs_ia$score_riesgo >= CONFIG$umbral_medio ~ "MEDIO",
+    TRUE                                        ~ "BAJO"
+  )
+  logs_ia$estado_prompt <- if_else(
+    logs_ia$score_riesgo >= CONFIG$umbral_alto,
+    "BLOQUEADO", "PERMITIDO"
+  )
+  
+  
+  # ---------------------------------------------------------
+  # 9. VALIDACION CONTRA OPENAI MODERATION (GROUND TRUTH)
+  # ---------------------------------------------------------
+  log_info("Comparando clasificador propio vs OpenAI moderation...")
+  
+  logs_ia$nuestro_flag <- logs_ia$score_riesgo >= CONFIG$umbral_medio
+  
+  matriz <- logs_ia %>%
+    count(nuestro_flag, mod_flagged) %>%
+    pivot_wider(names_from = mod_flagged, values_from = n, values_fill = 0,
+                names_prefix = "openai_")
+  log_info("Matriz de confusion (filas=nuestro, columnas=OpenAI):")
+  print(matriz)
+  
+  if (any(logs_ia$mod_flagged)) {
+    tp <- sum( logs_ia$nuestro_flag &  logs_ia$mod_flagged)
+    fp <- sum( logs_ia$nuestro_flag & !logs_ia$mod_flagged)
+    fn <- sum(!logs_ia$nuestro_flag &  logs_ia$mod_flagged)
+    tn <- sum(!logs_ia$nuestro_flag & !logs_ia$mod_flagged)
+    
+    precision <- if ((tp + fp) > 0) tp / (tp + fp) else NA_real_
+    recall    <- if ((tp + fn) > 0) tp / (tp + fn) else NA_real_
+    f1        <- if (!is.na(precision) && !is.na(recall) && (precision + recall) > 0)
+      2 * precision * recall / (precision + recall) else NA_real_
+    accuracy  <- (tp + tn) / nrow(logs_ia)
+    
+    log_info(glue(
+      "Precision: {round(precision, 3)} | Recall: {round(recall, 3)} | ",
+      "F1: {round(f1, 3)} | Accuracy: {round(accuracy, 3)}"
+    ))
+  } else {
+    log_warn("La muestra no contiene prompts flagged por OpenAI. ",
+             "Sube CONFIG$n_registros o cambia offset.")
+  }
+  
+  
+  # ---------------------------------------------------------
+  # 10. VISUALIZACIONES (PATCHWORK)
+  # ---------------------------------------------------------
+  tema <- theme_minimal(base_size = 11) +
+    theme(
+      plot.title       = element_text(face = "bold", size = 12),
+      plot.subtitle    = element_text(color = "grey30"),
+      legend.position  = "bottom",
+      panel.grid.minor = element_blank()
+    )
+  paleta <- c(BAJO = "#2ecc71", MEDIO = "#f39c12", ALTO = "#e74c3c")
+  
+  g1 <- logs_ia %>%
+    count(riesgo) %>%
+    mutate(riesgo = factor(riesgo, c("BAJO", "MEDIO", "ALTO")),
+           pct = n / sum(n)) %>%
+    ggplot(aes(riesgo, n, fill = riesgo)) +
+    geom_col() +
+    geom_text(aes(label = paste0(n, " (", percent(pct, 0.1), ")")),
+              vjust = -0.3) +
+    scale_fill_manual(values = paleta) +
+    expand_limits(y = max(table(logs_ia$riesgo)) * 1.15) +
+    labs(title = "Distribucion de riesgos", x = NULL, y = "Cantidad") +
+    tema + theme(legend.position = "none")
+  
+  g2 <- ggplot(logs_ia, aes(score_riesgo)) +
+    geom_histogram(binwidth = 1, fill = "#3498db", color = "white") +
+    labs(title = "Distribucion del score",
+         subtitle = "Suma ponderada de categorias detectadas",
+         x = "Score", y = "Cantidad") +
+    tema
+  
+  g3 <- ggplot(logs_ia, aes(riesgo, prompt_chars + 1, fill = riesgo)) +
+    geom_boxplot(alpha = 0.85) +
+    scale_fill_manual(values = paleta) +
+    scale_y_log10(labels = comma) +
+    labs(title = "Longitud del prompt por riesgo (log)",
+         x = NULL, y = "Caracteres") +
+    tema + theme(legend.position = "none")
+  
+  g4 <- logs_ia %>%
+    count(idioma, sort = TRUE) %>%
+    slice_head(n = 10) %>%
+    ggplot(aes(reorder(idioma, n), n)) +
+    geom_col(fill = "#9b59b6") +
+    coord_flip() +
+    labs(title = "Top 10 idiomas", x = NULL, y = "Cantidad") +
+    tema
+  
+  dashboard <- (g1 + g2) / (g3 + g4) +
+    plot_annotation(
+      title = "Dashboard de Auditoria - LMSYS Chat 1M",
+      subtitle = glue("Muestra: {nrow(logs_ia)} interacciones | Fuente: HuggingFace"),
+      theme = theme(plot.title = element_text(face = "bold", size = 14))
+    )
+  
+  print(dashboard)
+  ggsave(file.path(CONFIG$proyecto_dir, "graficos", "dashboard_principal.png"),
+         dashboard, width = 12, height = 8, dpi = 150)
+  
+  # Heatmap modelo x riesgo
+  g5 <- logs_ia %>%
+    count(modelo, riesgo) %>%
+    group_by(modelo) %>% mutate(pct = n / sum(n)) %>% ungroup() %>%
+    mutate(modelo = fct_reorder(modelo, n, sum),
+           riesgo = factor(riesgo, c("BAJO", "MEDIO", "ALTO"))) %>%
+    ggplot(aes(riesgo, modelo, fill = pct)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = percent(pct, 1)), size = 3) +
+    scale_fill_gradient(low = "#ecf0f1", high = "#c0392b", labels = percent) +
+    labs(title = "Porcentaje de riesgo por modelo",
+         x = NULL, y = NULL, fill = "%") + tema
+  
+  ggsave(file.path(CONFIG$proyecto_dir, "graficos", "heatmap_modelo_riesgo.png"),
+         g5, width = 9, height = max(5, length(unique(logs_ia$modelo)) * 0.3),
+         dpi = 150)
+  
+  
+  # ---------------------------------------------------------
+  # 11. TEXT MINING SOBRE PROMPTS DE RIESGO ALTO
+  # ---------------------------------------------------------
+  top_palabras <- logs_ia %>%
+    filter(riesgo == "ALTO") %>%
+    select(id, prompt) %>%
+    unnest_tokens(palabra, prompt) %>%
+    anti_join(stop_words, by = c("palabra" = "word")) %>%
+    filter(nchar(palabra) > 3, !str_detect(palabra, "^\\d+$")) %>%
+    count(palabra, sort = TRUE) %>%
+    slice_head(n = 20)
+  
+  if (nrow(top_palabras) > 0) {
+    g6 <- ggplot(top_palabras, aes(reorder(palabra, n), n)) +
+      geom_col(fill = "#e74c3c") +
+      coord_flip() +
+      labs(title = "Palabras mas frecuentes en prompts de riesgo ALTO",
+           x = NULL, y = "Frecuencia") + tema
+    ggsave(file.path(CONFIG$proyecto_dir, "graficos", "palabras_riesgo_alto.png"),
+           g6, width = 8, height = 6, dpi = 150)
+  }
+  
+  
+  # ---------------------------------------------------------
+  # 12. EXPORTACION SEGURA (evita columnas tipo lista en CSV)
+  # ---------------------------------------------------------
+  escribir_csv <- function(df, ruta) {
+    df_safe <- df %>%
+      select(-where(is.list)) %>%
+      mutate(across(where(is.character), ~ str_replace_all(.x, "[\r\n]+", " ")))
+    write_csv(df_safe, ruta)
+  }
+  
+  escribir_csv(logs_ia,
+               file.path(CONFIG$proyecto_dir, "resultados", "auditoria_completa.csv"))
+  escribir_csv(logs_ia %>% filter(riesgo == "ALTO"),
+               file.path(CONFIG$proyecto_dir, "resultados", "prompts_riesgo_alto.csv"))
+  escribir_csv(logs_ia %>% filter(estado_prompt == "BLOQUEADO"),
+               file.path(CONFIG$proyecto_dir, "resultados", "prompts_bloqueados.csv"))
+  
+  logs_ia %>% count(riesgo, name = "total") %>%
+    mutate(pct = round(total / sum(total) * 100, 2)) %>%
+    write_csv(file.path(CONFIG$proyecto_dir, "resultados", "resumen_riesgos.csv"))
+  
+  logs_ia %>% count(modelo, riesgo, name = "total") %>%
+    write_csv(file.path(CONFIG$proyecto_dir, "resultados", "riesgo_por_modelo.csv"))
+  
+  logs_ia %>% count(idioma, riesgo, name = "total") %>%
+    write_csv(file.path(CONFIG$proyecto_dir, "resultados", "riesgo_por_idioma.csv"))
+  
+  
+  # ---------------------------------------------------------
+  # 13. REPORTE EJECUTIVO ESTRUCTURADO
+  # ---------------------------------------------------------
+  generar_reporte <- function(df, cfg, archivo) {
+    sink(archivo); on.exit(sink())
+    
+    cat(strrep("=", 64), "\n", sep = "")
+    cat("REPORTE EJECUTIVO DE AUDITORIA - IA GENERATIVA\n")
+    cat("Dataset: ", cfg$dataset_id, "\n", sep = "")
+    cat("Fecha:   ", format(Sys.time()), "\n", sep = "")
+    cat(strrep("=", 64), "\n\n", sep = "")
+    
+    cat("1. RESUMEN GENERAL\n")
+    cat(sprintf("   Total interacciones : %d\n", nrow(df)))
+    cat(sprintf("   Modelos distintos   : %d\n", length(unique(df$modelo))))
+    cat(sprintf("   Idiomas detectados  : %d\n", length(unique(df$idioma))))
+    cat(sprintf("   Turnos promedio     : %.2f\n\n", mean(df$turnos, na.rm = TRUE)))
+    
+    cat("2. DISTRIBUCION DE RIESGO\n")
+    print(knitr::kable(
+      df %>% count(riesgo) %>% mutate(pct = round(n / sum(n) * 100, 1)),
+      format = "simple"))
+    cat("\n")
+    
+    cat("3. CATEGORIAS DETECTADAS MAS FRECUENTES\n")
+    cats <- df %>% filter(nchar(categorias_riesgo) > 0) %>%
+      separate_rows(categorias_riesgo, sep = ";") %>%
+      count(categorias_riesgo, sort = TRUE) %>%
+      slice_head(n = 10)
+    if (nrow(cats) > 0) print(knitr::kable(cats, format = "simple"))
+    else cat("   (sin detecciones)\n")
+    cat("\n")
+    
+    cat("4. VALIDACION VS OPENAI MODERATION\n")
+    if (any(df$mod_flagged)) {
+      tp <- sum( df$nuestro_flag &  df$mod_flagged)
+      fp <- sum( df$nuestro_flag & !df$mod_flagged)
+      fn <- sum(!df$nuestro_flag &  df$mod_flagged)
+      cat(sprintf("   Flagged OpenAI       : %d\n", sum(df$mod_flagged)))
+      cat(sprintf("   Flagged clasificador : %d\n", sum(df$nuestro_flag)))
+      cat(sprintf("   Coincidencias (TP)   : %d\n", tp))
+      cat(sprintf("   Falsos positivos (FP): %d\n", fp))
+      cat(sprintf("   Falsos negativos (FN): %d\n", fn))
+    } else {
+      cat("   La muestra no incluye prompts flagged por OpenAI.\n")
+    }
+    cat("\n")
+    
+    cat("5. TOP 10 MODELOS POR VOLUMEN\n")
+    print(knitr::kable(df %>% count(modelo, sort = TRUE) %>% slice_head(n = 10),
+                       format = "simple"))
+    cat("\n")
+    
+    cat("6. RECOMENDACIONES\n")
+    cat("   - Revisar manualmente los prompts marcados como ALTO.\n")
+    cat("   - Ajustar pesos y patrones con base en falsos positivos del set.\n")
+    cat("   - Ampliar reglas para idiomas distintos al ingles.\n")
+    cat("   - Implementar logging continuo en produccion (esto es batch).\n")
+    cat("   - Auditar tambien las RESPUESTAS del modelo, no solo los prompts.\n")
+    cat("\n", strrep("=", 64), "\n", sep = "")
+  }
+  
+  generar_reporte(logs_ia, CONFIG,
+                  file.path(CONFIG$proyecto_dir, "reportes", "reporte_ejecutivo.txt"))
+  
+  
+  # ---------------------------------------------------------
+  # 14. DASHBOARD EN CONSOLA
+  # ---------------------------------------------------------
+  cat("\n", strrep("=", 60), "\n", sep = "")
+  cat(" DASHBOARD AUDITORIA IA GENERATIVA\n")
+  cat(strrep("=", 60), "\n", sep = "")
+  cat(sprintf(" Interacciones       : %d\n", nrow(logs_ia)))
+  cat(sprintf(" Riesgo ALTO         : %d (%.1f%%)\n",
+              sum(logs_ia$riesgo == "ALTO"),  mean(logs_ia$riesgo == "ALTO")  * 100))
+  cat(sprintf(" Riesgo MEDIO        : %d (%.1f%%)\n",
+              sum(logs_ia$riesgo == "MEDIO"), mean(logs_ia$riesgo == "MEDIO") * 100))
+  cat(sprintf(" Riesgo BAJO         : %d (%.1f%%)\n",
+              sum(logs_ia$riesgo == "BAJO"),  mean(logs_ia$riesgo == "BAJO")  * 100))
+  cat(sprintf(" Bloqueados          : %d\n", sum(logs_ia$estado_prompt == "BLOQUEADO")))
+  cat(sprintf(" Flagged por OpenAI  : %d\n", sum(logs_ia$mod_flagged)))
+  cat(sprintf(" Modelos distintos   : %d\n", length(unique(logs_ia$modelo))))
+  cat(sprintf(" Idiomas detectados  : %d\n", length(unique(logs_ia$idioma))))
+  cat(strrep("=", 60), "\n", sep = "")
+  
+  log_info("Taller v2 finalizado. Carpeta:", CONFIG$proyecto_dir)
+  stop("No se encontraron datos en la respuesta de Hugging Face.")
+}
+
+cat("\nDatos descargados correctamente.")
+cat("\nRegistros obtenidos:", nrow(datos_raw), "\n")
+
+write_csv(
+  datos_raw,
+  file.path(proyecto_dir, "data", "datos_originales_lmsys.csv")
+)
+
+# =========================================================
+# 8. VISUALIZACION DEL DATASET ORIGINAL
+# =========================================================
+
+cat("\n====================================")
+cat("\n DATASET ORIGINAL HUGGING FACE")
+cat("\n====================================\n")
+
+cat("\nColumnas encontradas:\n")
+print(names(datos_raw))
+
+cat("\nPrimeras filas:\n")
+print(head(datos_raw, 5))
+
+cat("\nDimensiones:\n")
+print(dim(datos_raw))
+
+# =========================================================
+# 9. EXTRAER PROMPT Y RESPUESTA DESDE LA COLUMNA CONVERSATION
+# =========================================================
+
+cat("\n====================================")
+cat("\n EXTRAYENDO PROMPT Y RESPUESTA")
+cat("\n====================================\n")
+
+extraer_prompt <- function(conversation){
+  
+  if(is.null(conversation) || is.na(conversation)){
+    return(NA)
+  }
+  
+  texto <- as.character(conversation)
+  
+  # Buscar el primer mensaje del usuario
+  if(str_detect(texto, "user")){
+    return(str_sub(texto, 1, 1000))
+  } else {
+    return(str_sub(texto, 1, 1000))
+  }
+}
+
+extraer_respuesta <- function(conversation){
+  
+  if(is.null(conversation) || is.na(conversation)){
+    return(NA)
+  }
+  
+  texto <- as.character(conversation)
+  
+  # Tomamos una parte posterior de la conversacion como respuesta aproximada
+  return(str_sub(texto, 1001, 2000))
+}
+
+# Algunos datasets vienen con conversation como lista.
+# Por eso primero la convertimos a texto seguro.
+
+datos_raw <- datos_raw %>%
+  mutate(
+    conversation_text = sapply(conversation, function(x){
+      paste(as.character(x), collapse = " ")
+    })
+  )
+
+# =========================================================
+# 10. MAPPING DEL DATASET AL MODELO DE AUDITORIA
+# =========================================================
+
+cat("\n====================================")
+cat("\n MAPEANDO DATOS AL MODELO DE AUDITORIA")
+cat("\n====================================\n")
+
+set.seed(123)
+
+logs_ia <- datos_raw %>%
+  mutate(
+    id = row_number(),
+    usuario = paste0("usuario_", sample(1:50, n(), replace = TRUE)),
+    fecha = Sys.time() + seconds(1:n()),
+    prompt = sapply(conversation_text, extraer_prompt),
+    respuesta = sapply(conversation_text, extraer_respuesta),
+    modelo = if("model" %in% names(datos_raw)) as.character(model) else "LMSYS-Chat",
+    departamento = sample(
+      c("Ingenieria", "Docencia", "Investigacion", "Administracion"),
+      n(),
+      replace = TRUE
+    ),
+    fuente = "Hugging Face - lmsys/lmsys-chat-1m"
+  ) %>%
+  select(
+    id,
+    usuario,
+    fecha,
+    prompt,
+    respuesta,
+    modelo,
+    departamento,
+    fuente,
+    everything()
+  )
+
+logs_ia <- logs_ia %>%
+  filter(!is.na(prompt), prompt != "")
+
+logs_ia$id_auditoria <- paste0(
+  "AUD-",
+  year(Sys.Date()),
+  "-",
+  logs_ia$id
+)
+
+cat("\nDataset mapeado correctamente.")
+cat("\nTotal registros procesados:", nrow(logs_ia), "\n")
+
+# =========================================================
+# 11. VISUALIZACION DEL DATASET PROCESADO
+# =========================================================
+
+cat("\n====================================")
+cat("\n PRIMERAS FILAS DEL DATASET PROCESADO")
+cat("\n====================================\n")
+
+print(
+  head(
+    logs_ia[, c("id", "usuario", "prompt", "respuesta", "modelo", "fuente")],
+    10
+  )
+)
+
+cat("\nDimensiones del dataset procesado:\n")
+print(dim(logs_ia))
+
+cat("\nEstructura de columnas principales:\n")
+str(logs_ia[, c("prompt", "respuesta", "modelo", "departamento", "fuente")])
+
+# =========================================================
+# 12. FUNCION DE CLASIFICACION DE RIESGOS
+# =========================================================
+
+clasificar_riesgo <- function(prompt){
+  
+  prompt <- tolower(prompt)
+  
+  if(grepl(
+    paste(
+      c(
+        "datos personales",
+        "personal data",
+        "private information",
+        "informacion privada",
+        "password",
+        "contraseña",
+        "api key",
+        "token",
+        "secret",
+        "credential",
+        "malware",
+        "virus",
+        "phishing",
+        "deepfake",
+        "noticia falsa",
+        "fake news",
+        "identidad falsa",
+        "fake identity",
+        "propaganda politica",
+        "hack",
+        "steal",
+        "bypass",
+        "exploit"
+      ),
+      collapse = "|"
+    ),
+    prompt
+  )){
+    return("ALTO")
+  } else if(grepl(
+    paste(
+      c(
+        "tesis",
+        "thesis",
+        "ensayo",
+        "essay",
+        "codigo",
+        "code",
+        "program",
+        "articulo",
+        "article",
+        "contrato",
+        "contract",
+        "examen",
+        "exam",
+        "homework",
+        "tarea",
+        "prompt",
+        "instruction",
+        "model",
+        "dataset",
+        "agent",
+        "memory",
+        "academic",
+        "research"
+      ),
+      collapse = "|"
+    ),
+    prompt
+  )){
+    return("MEDIO")
+  } else {
+    return("BAJO")
+  }
+}
+
+logs_ia$riesgo <- sapply(
+  logs_ia$prompt,
+  clasificar_riesgo
+)
+
+# =========================================================
+# 13. VISUALIZAR RESULTADOS DE CLASIFICACION
+# =========================================================
+
+cat("\n====================================")
+cat("\n CLASIFICACION DE RIESGOS")
+cat("\n====================================\n")
+
+print(
+  head(
+    logs_ia[, c("usuario", "prompt", "riesgo")],
+    20
+  )
+)
+
+# =========================================================
+# 14. TABLA DE RIESGOS
+# =========================================================
+
+cat("\n====================================")
+cat("\n TABLA DE RIESGOS")
+cat("\n====================================\n")
+
+tabla_riesgos <- table(logs_ia$riesgo)
+print(tabla_riesgos)
+
+tabla_riesgos_df <- logs_ia %>%
+  count(riesgo, name = "total") %>%
+  mutate(
+    porcentaje = round(total / sum(total) * 100, 2)
+  )
+
+print(tabla_riesgos_df)
+
+write_csv(
+  tabla_riesgos_df,
+  file.path(proyecto_dir, "resultados", "tabla_riesgos.csv")
+)
+
+# =========================================================
+# 15. GRAFICO DE RIESGOS
+# =========================================================
+
+grafico_riesgos <- ggplot(
+  logs_ia,
+  aes(x = riesgo)
+) +
+  geom_bar(fill = "steelblue") +
+  labs(
+    title = "Clasificacion de Riesgos en IA Generativa",
+    subtitle = "Dataset Hugging Face: lmsys/lmsys-chat-1m",
+    x = "Nivel de Riesgo",
+    y = "Cantidad"
+  ) +
+  theme_minimal()
+
+print(grafico_riesgos)
+
+ggsave(
+  filename = file.path(proyecto_dir, "graficos", "grafico_riesgos.png"),
+  plot = grafico_riesgos,
+  width = 8,
+  height = 5
+)
+
+# =========================================================
+# 16. FILTRAR RIESGOS ALTOS
+# =========================================================
+
+riesgo_alto <- logs_ia %>%
+  filter(riesgo == "ALTO")
+
+cat("\n====================================")
+cat("\n PROMPTS DE RIESGO ALTO")
+cat("\n====================================\n")
+
+if(nrow(riesgo_alto) > 0){
+  print(riesgo_alto[, c("id", "prompt", "riesgo")])
+} else {
+  cat("No se encontraron prompts de riesgo alto en esta muestra.\n")
+}
+
+write_csv(
+  riesgo_alto,
+  file.path(proyecto_dir, "resultados", "riesgo_alto.csv")
+)
+
+# =========================================================
+# 17. ANALISIS POR MODELO
+# =========================================================
+
+riesgo_modelo <- logs_ia %>%
+  group_by(modelo, riesgo) %>%
+  summarise(total = n(), .groups = "drop")
+
+cat("\n====================================")
+cat("\n ANALISIS POR MODELO")
+cat("\n====================================\n")
+
+print(riesgo_modelo)
+
+grafico_modelos <- ggplot(
+  riesgo_modelo,
+  aes(
+    x = modelo,
+    y = total,
+    fill = riesgo
+  )
+) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Riesgos Detectados por Modelo IA",
+    subtitle = "Modelos registrados en LMSYS Chat 1M",
+    x = "Modelo",
+    y = "Cantidad"
+  ) +
+  theme_minimal()
+
+print(grafico_modelos)
+
+ggsave(
+  filename = file.path(proyecto_dir, "graficos", "grafico_modelos.png"),
+  plot = grafico_modelos,
+  width = 8,
+  height = 5
+)
+
+# =========================================================
+# 18. BLOQUEO AUTOMATICO
+# =========================================================
+
+bloquear_prompt <- function(prompt){
+  
+  prompt <- tolower(prompt)
+  
+  if(grepl(
+    paste(
+      c(
+        "malware",
+        "virus",
+        "phishing",
+        "deepfake",
+        "datos personales",
+        "personal data",
+        "informacion privada",
+        "private information",
+        "identidad falsa",
+        "fake identity",
+        "propaganda politica",
+        "api key",
+        "password",
+        "contraseña",
+        "token",
+        "secret",
+        "credential",
+        "hack",
+        "steal",
+        "bypass",
+        "exploit"
+      ),
+      collapse = "|"
+    ),
+    prompt
+  )){
+    return("BLOQUEADO")
+  } else {
+    return("PERMITIDO")
+  }
+}
+
+logs_ia$estado_prompt <- sapply(
+  logs_ia$prompt,
+  bloquear_prompt
+)
+
+cat("\n====================================")
+cat("\n ESTADO DE PROMPTS")
+cat("\n====================================\n")
+
+print(
+  head(
+    logs_ia[, c("prompt", "estado_prompt")],
+    20
+  )
+)
+
+# =========================================================
+# 19. GRAFICO DE ESTADO DE PROMPTS
+# =========================================================
+
+grafico_estado <- ggplot(
+  logs_ia,
+  aes(x = estado_prompt)
+) +
+  geom_bar(fill = "darkorange") +
+  labs(
+    title = "Estado de Prompts Analizados",
+    subtitle = "Permitidos vs Bloqueados",
+    x = "Estado del Prompt",
+    y = "Cantidad"
+  ) +
+  theme_minimal()
+
+print(grafico_estado)
+
+ggsave(
+  filename = file.path(proyecto_dir, "graficos", "grafico_estado_prompts.png"),
+  plot = grafico_estado,
+  width = 8,
+  height = 5
+)
+
+# =========================================================
+# 20. EXPORTAR PROMPTS BLOQUEADOS
+# =========================================================
+
+prompts_bloqueados <- logs_ia %>%
+  filter(estado_prompt == "BLOQUEADO")
+
+write_csv(
+  prompts_bloqueados,
+  file.path(proyecto_dir, "resultados", "prompts_bloqueados.csv")
+)
+
+# =========================================================
+# 21. DASHBOARD EJECUTIVO EN CONSOLA
+# =========================================================
+
+cat("\n====================================")
+cat("\n DASHBOARD EJECUTIVO")
+cat("\n====================================\n")
+
+cat("\nTotal interacciones:", nrow(logs_ia))
+cat("\nUsuarios unicos:", length(unique(logs_ia$usuario)))
+cat("\nRiesgos altos:", sum(logs_ia$riesgo == "ALTO"))
+cat("\nRiesgos medios:", sum(logs_ia$riesgo == "MEDIO"))
+cat("\nRiesgos bajos:", sum(logs_ia$riesgo == "BAJO"))
+cat("\nPrompts bloqueados:", sum(logs_ia$estado_prompt == "BLOQUEADO"))
+cat("\nFuente:", unique(logs_ia$fuente))
+cat("\n")
+
+# =========================================================
+# 22. ANALISIS POR USUARIO
+# =========================================================
+
+riesgo_usuario <- logs_ia %>%
+  group_by(usuario, riesgo) %>%
+  summarise(total = n(), .groups = "drop")
+
+cat("\n====================================")
+cat("\n RIESGO POR USUARIO")
+cat("\n====================================\n")
+
+print(head(riesgo_usuario, 10))
+
+write_csv(
+  riesgo_usuario,
+  file.path(proyecto_dir, "resultados", "riesgo_por_usuario.csv")
+)
+
+# =========================================================
+# 23. ANALISIS POR DEPARTAMENTO
+# =========================================================
+
+riesgo_departamento <- logs_ia %>%
+  group_by(departamento, riesgo) %>%
+  summarise(total = n(), .groups = "drop")
+
+cat("\n====================================")
+cat("\n RIESGO POR DEPARTAMENTO")
+cat("\n====================================\n")
+
+print(riesgo_departamento)
+
+grafico_departamento <- ggplot(
+  riesgo_departamento,
+  aes(
+    x = departamento,
+    y = total,
+    fill = riesgo
+  )
+) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Riesgos Detectados por Departamento",
+    subtitle = "Departamentos simulados para trazabilidad",
+    x = "Departamento",
+    y = "Cantidad"
+  ) +
+  theme_minimal()
+
+print(grafico_departamento)
+
+ggsave(
+  filename = file.path(proyecto_dir, "graficos", "grafico_departamento.png"),
+  plot = grafico_departamento,
+  width = 8,
+  height = 5
+)
+
+write_csv(
+  riesgo_departamento,
+  file.path(proyecto_dir, "resultados", "riesgo_por_departamento.csv")
+)
+
+# =========================================================
+# 24. EXPORTAR AUDITORIA COMPLETA
+# =========================================================
+
+write_csv(
+  logs_ia,
+  file.path(proyecto_dir, "resultados", "auditoria_ia_generativa_lmsys.csv")
+)
+
+write_csv(
+  riesgo_modelo,
+  file.path(proyecto_dir, "resultados", "riesgo_por_modelo.csv")
+)
+
+# =========================================================
+# 25. GENERAR REPORTE TXT
+# =========================================================
+
+sink(file.path(proyecto_dir, "reportes", "reporte_ejecutivo.txt"))
+
+cat("====================================\n")
+cat("REPORTE EJECUTIVO DE AUDITORIA IA\n")
+cat("DATOS REALES: HUGGING FACE - LMSYS CHAT 1M\n")
+cat("====================================\n\n")
+
+cat("Fecha de generacion:\n")
+print(Sys.Date())
+
+cat("\nFuente del dataset:\n")
+print(unique(logs_ia$fuente))
+
+cat("\nDataset Hugging Face:\n")
+print(dataset_id)
+
+cat("\nConfiguracion:\n")
+print(config_dataset)
+
+cat("\nSplit:\n")
+print(split_dataset)
+
+cat("\nTotal interacciones analizadas:\n")
+print(nrow(logs_ia))
+
+cat("\nUsuarios unicos:\n")
+print(length(unique(logs_ia$usuario)))
+
+cat("\nRiesgos altos:\n")
+print(sum(logs_ia$riesgo == "ALTO"))
+
+cat("\nRiesgos medios:\n")
+print(sum(logs_ia$riesgo == "MEDIO"))
+
+cat("\nRiesgos bajos:\n")
+print(sum(logs_ia$riesgo == "BAJO"))
+
+cat("\nPrompts bloqueados automaticamente:\n")
+print(sum(logs_ia$estado_prompt == "BLOQUEADO"))
+
+cat("\nModelos utilizados:\n")
+print(unique(logs_ia$modelo))
+
+cat("\nDepartamentos con mas interacciones:\n")
+print(sort(table(logs_ia$departamento), decreasing = TRUE))
+
+cat("\nTabla de riesgos:\n")
+print(table(logs_ia$riesgo))
+
+cat("\nTabla de estados de prompts:\n")
+print(table(logs_ia$estado_prompt))
+
+cat("\nAnalisis por modelo:\n")
+print(riesgo_modelo)
+
+cat("\nAnalisis por departamento:\n")
+print(riesgo_departamento)
+
+sink()
+
+# =========================================================
+# 26. CONCLUSIONES AUTOMATICAS
+# =========================================================
+
+cat("\n====================================")
+cat("\n CONCLUSIONES BASADAS EN DATOS DE HUGGING FACE")
+cat("\n====================================\n")
+
+cat("
+1. El dataset LMSYS Chat 1M permite analizar conversaciones reales con modelos de lenguaje en un entorno de auditoria.
+2. La clasificacion de riesgos permite identificar prompts de riesgo bajo, medio y alto mediante reglas basadas en palabras clave.
+3. El bloqueo automatico permite separar prompts permitidos de prompts potencialmente sensibles o peligrosos.
+4. La trazabilidad mediante usuario, fecha, modelo, departamento, fuente e ID de auditoria facilita el seguimiento de cada interaccion.
+5. El ejercicio demuestra la importancia de implementar auditoria continua y gobernanza sobre el uso de IA generativa.
+")
+
+# =========================================================
+# 27. FINALIZACION
+# =========================================================
+
+cat("\n====================================")
+cat("\n TALLER CON DATASET LMSYS FINALIZADO")
+cat("\n====================================\n")
+
+cat("\nArchivos generados correctamente en la carpeta:\n")
+cat(proyecto_dir, "\n")
+
+cat("
+- data/datos_originales_lmsys.csv
+- graficos/grafico_riesgos.png
+- graficos/grafico_modelos.png
+- graficos/grafico_estado_prompts.png
+- graficos/grafico_departamento.png
+- resultados/auditoria_ia_generativa_lmsys.csv
+- resultados/prompts_bloqueados.csv
+- resultados/riesgo_alto.csv
+- resultados/riesgo_por_modelo.csv
+- resultados/riesgo_por_usuario.csv
+- resultados/riesgo_por_departamento.csv
+- resultados/tabla_riesgos.csv
+- reportes/reporte_ejecutivo.txt
+")
